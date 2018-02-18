@@ -1,7 +1,7 @@
-const twitter = require('twitter');
 const AWS = require('aws-sdk');
 const fs = require('fs');
 const Sentimental = require('./connection/models/Sentimental');
+const twitter = require('./twitter-streaming');
 
 // aws config
 AWS.config.loadFromPath('./aws-config.json');
@@ -15,23 +15,25 @@ var s3 = new AWS.S3();
 
 var comprehend = new AWS.Comprehend();
 
-//twitter
-var twitterKey = JSON.parse(fs.readFileSync('./twitter-key.json', 'utf8'));
-const client = new twitter(twitterKey);
+//twitter stream
+twitter.stream(streamConsume);
+//other streams
 
-var stream = client.stream('statuses/filter', { track: 'BTC' });
 
 var out = [];
-var date = new Date();
-var now = date.getTime();
+var now = new Date().getTime();
+var past;
 
 //streaming data
-stream.on('data', function (event) {
+function streamConsume(text) {
+    past = now;
+    now = new Date().getTime();
     //comprehend
     var params = {
         LanguageCode: 'en', /* required */
-        Text: event.text /* required */
+        Text: text /* required */
     };
+
     comprehend.detectSentiment(params, function (err, data) {
         if (err) console.log(err, err.stack); // an error occurred
         else console.log(data);           // successful response
@@ -49,23 +51,21 @@ stream.on('data', function (event) {
             .catch((result) => { sentimental.end(); console.log(result); });
     });
 
-    var now_d = new Date(parseInt(now));
-    var twitter_d = new Date(parseInt(event.timestamp_ms));
+    out.push({
+        text: text,
+        timestamp: now
+    });
+
     //1時間ごとにS3に保存
-    if (now_d.getHours() < twitter_d.getHours()) {
+    if (new Date(past).getHours() < new Date(now).getHours()) {
         var data = out;
         out = [];
-        var d = new Date(parseInt(now));
+        var d = new Date(now);
         var year = d.getFullYear();
         var month = d.getMonth() + 1;
         var day = d.getDate();
         var hour = (d.getHours() < 10) ? '0' + d.getHours() : d.getHours();
-        console.log(d);
-        out.push({
-            text: event.text,
-            user_id: event.user.id,
-            timestamp: event.timestamp_ms
-        });
+
         s3.putObject({
             Bucket: 'carp-producer/twitter-data',
             Key: year + '-' + month + '-' + day + '-' + hour + '.json',
@@ -76,10 +76,7 @@ stream.on('data', function (event) {
                 console.log(JSON.stringify(err), JSON.stringify(data));
             });
     }
-});
+}
 
-stream.on('error', function (error) {
-    throw error;
-});
 
 
